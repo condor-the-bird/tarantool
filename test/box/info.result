@@ -51,7 +51,8 @@ table.sort(t)
 ...
 t
 ---
-- - pid
+- - cluster
+  - pid
   - replication
   - server
   - status

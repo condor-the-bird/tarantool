@@ -39,38 +39,109 @@ extern "C" {
 
 #include "box/replica.h"
 #include "box/recovery.h"
+#include "box/relay.h"
 #include "box/cluster.h"
 #include "main.h"
 #include "box/box.h"
 #include "lua/utils.h"
 #include "fiber.h"
 
+static void
+lbox_pushrelay(struct lua_State *L, Relay *relay)
+{
+	lua_newtable(L);
+
+	lua_pushliteral(L, "connected");
+	lua_setfield(L, -2, "status");
+
+	lua_pushliteral(L, "downstream");
+	lua_setfield(L, -2, "type");
+
+	luaL_pushsockaddr(L, &relay->addr, relay->addr_len);
+	lua_setfield(L, -2, "peer");
+
+	lua_createtable(L, 0, vclock_size(&relay->r->vclock));
+	struct vclock_iterator it;
+	vclock_iterator_init(&it, &relay->r->vclock);
+	vclock_foreach(&it, server) {
+		lua_pushinteger(L, server.id);
+		luaL_pushuint64(L, server.lsn);
+		lua_settable(L, -3);
+	}
+	/* Request compact output flow */
+	luaL_setmaphint(L, -1);
+	lua_setfield(L, -2, "vclock");
+
+	lua_pushstring(L, "idle");
+	lua_pushnumber(L, ev_now(loop()) - relay->last_row_time);
+	lua_settable(L, -3);
+}
+
+static void
+lbox_pushremote(struct lua_State *L, struct remote *remote)
+{
+	lua_newtable(L);
+
+	lua_pushstring(L, remote->status);
+	lua_setfield(L, -2, "status");
+
+	lua_pushliteral(L, "upstream");
+	lua_setfield(L, -2, "type");
+
+	if (remote->reader == NULL)
+		return;
+
+	luaL_pushsockaddr(L, &remote->addr, remote->addr_len);
+	lua_setfield(L, -2, "peer");
+
+	lua_pushstring(L, "lag");
+	lua_pushnumber(L, remote->lag);
+	lua_settable(L, -3);
+
+	lua_pushstring(L, "idle");
+	lua_pushnumber(L, ev_now(loop()) - remote->last_row_time);
+	lua_settable(L, -3);
+
+	Exception *e = diag_last_error(&remote->reader->diag);
+	if (e != NULL) {
+		lua_pushstring(L, "message");
+		lua_pushstring(L, e->errmsg());
+		lua_settable(L, -3);
+	}
+}
+
 static int
 lbox_info_replication(struct lua_State *L)
+{
+	/* Old backward-compatible format */
+
+	struct recovery_state *r = recovery;
+	lbox_pushremote(L, &r->remote);
+	lua_pushnil(L);
+	lua_setfield(L, -2, "type"); /* hide box.info.replication.type */
+
+	return 1;
+}
+
+static int
+lbox_info_cluster(struct lua_State *L)
 {
 	struct recovery_state *r = recovery;
 
 	lua_newtable(L);
 
-	lua_pushstring(L, "status");
-	lua_pushstring(L, r->remote.status);
-	lua_settable(L, -3);
+	/* Downstreams */
+	Relay *relay;
+	recovery_foreach_relay(r, relay) {
+		lbox_pushrelay(L, relay);
+		const char *key = sio_strfaddr(&relay->addr, relay->addr_len);
+		lua_setfield(L, -2, key);
+	}
 
-	if (r->remote.reader) {
-		lua_pushstring(L, "lag");
-		lua_pushnumber(L, r->remote.lag);
-		lua_settable(L, -3);
-
-		lua_pushstring(L, "idle");
-		lua_pushnumber(L, ev_now(loop()) - r->remote.last_row_time);
-		lua_settable(L, -3);
-
-		Exception *e = diag_last_error(&r->remote.reader->diag);
-		if (e != NULL) {
-			lua_pushstring(L, "message");
-			lua_pushstring(L, e->errmsg());
-			lua_settable(L, -3);
-		}
+	/* Upstreams */
+	if (recovery_has_remote(r)) {
+		lbox_pushremote(L, &r->remote);
+		lua_setfield(L, -2, r->remote.source);
 	}
 
 	return 1;
@@ -109,6 +180,7 @@ lbox_info_vclock(struct lua_State *L)
 		luaL_pushuint64(L, server.lsn);
 		lua_settable(L, -3);
 	}
+	luaL_setmaphint(L, -1);
 
 	return 1;
 }
@@ -164,6 +236,7 @@ lbox_info_dynamic_meta [] =
 	{"vclock", lbox_info_vclock},
 	{"server", lbox_info_server},
 	{"replication", lbox_info_replication},
+	{"cluster", lbox_info_cluster},
 	{"status", lbox_info_status},
 	{"uptime", lbox_info_uptime},
 	{"pid", lbox_info_pid},

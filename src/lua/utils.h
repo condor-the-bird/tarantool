@@ -34,6 +34,8 @@
 #include <stdint.h>
 #include <string.h>
 #include <math.h> /* modf, isfinite */
+#include <sys/socket.h> /* socklen_t */
+#include <sys/un.h> /* struct sockaddr_un */
 
 #include "msgpuck/msgpuck.h" /* enum mp_type */
 
@@ -431,6 +433,16 @@ luaL_pushnull(struct lua_State *L)
 {
 	lua_rawgeti(L, LUA_REGISTRYINDEX, luaL_nil_ref);
 }
+
+/**
+ * Push struct sockaddr structure as as table
+ * @param L stack
+ * @param addr sockaddr structure
+ * @param len length of addr
+ */
+int
+luaL_pushsockaddr(struct lua_State *L, const struct sockaddr *addr,
+		  socklen_t alen);
 
 static inline void
 luaL_checkfinite(struct lua_State *L, struct luaL_serializer *cfg,

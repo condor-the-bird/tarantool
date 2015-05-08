@@ -51,33 +51,36 @@ void
 relay_send_row(struct recovery_state *r, void *param,
 	       struct xrow_header *packet);
 
-Relay::Relay(int fd_arg, uint64_t sync_arg)
+Relay::Relay(struct recovery_state *tx_r, int fd_arg, uint64_t sync_arg)
 {
 	r = recovery_new(cfg_gets("snap_dir"), cfg_gets("wal_dir"),
 			 relay_send_row, this);
 	recovery_setup_panic(r, cfg_geti("panic_on_snap_error"),
 			     cfg_geti("panic_on_wal_error"));
 
+	addr_len = sizeof(addrstorage);
+	getpeername(fd_arg, &addr, &addr_len);
+	last_row_time = ev_now(loop());
+
 	coio_init(&io);
 	io.fd = fd_arg;
 	sync = sync_arg;
 	wal_dir_rescan_delay = cfg_getd("wal_dir_rescan_delay");
+	rlist_add_tail_entry(&tx_r->relay, this, link);
 }
 
 Relay::~Relay()
 {
+	rlist_del_entry(this, link);
 	recovery_delete(r);
 }
 
 static inline void
-relay_set_cord_name(int fd)
+relay_set_cord_name(Relay *relay)
 {
 	char name[FIBER_NAME_MAX];
-	struct sockaddr_storage peer;
-	socklen_t addrlen = sizeof(peer);
-	getpeername(fd, ((struct sockaddr*)&peer), &addrlen);
 	snprintf(name, sizeof(name), "relay/%s",
-		 sio_strfaddr((struct sockaddr *)&peer, addrlen));
+		 sio_strfaddr(&relay->addr, relay->addr_len));
 	cord_set_name(name);
 }
 
@@ -86,7 +89,7 @@ replication_join_f(va_list ap)
 {
 	Relay *relay = va_arg(ap, Relay *);
 
-	relay_set_cord_name(relay->io.fd);
+	relay_set_cord_name(relay);
 
 	/* Send snapshot */
 	engine_join(relay);
@@ -94,10 +97,11 @@ replication_join_f(va_list ap)
 }
 
 void
-replication_join(int fd, struct xrow_header *packet,
+replication_join(struct recovery_state *tx_r, int fd,
+		 struct xrow_header *packet,
 		 void (*on_join)(const struct tt_uuid *))
 {
-	Relay relay(fd, packet->sync);
+	Relay relay(tx_r, fd, packet->sync);
 	struct recovery_state *r = relay.r;
 
 	struct tt_uuid server_uuid = uuid_nil;
@@ -138,7 +142,7 @@ replication_subscribe_f(va_list ap)
 	Relay *relay = va_arg(ap, Relay *);
 	struct recovery_state *r = relay->r;
 
-	relay_set_cord_name(relay->io.fd);
+	relay_set_cord_name(relay);
 	recovery_follow_local(r, fiber_name(fiber()),
 			      relay->wal_dir_rescan_delay);
 
@@ -190,9 +194,9 @@ replication_subscribe_f(va_list ap)
 
 /** Replication acceptor fiber handler. */
 void
-replication_subscribe(int fd, struct xrow_header *packet)
+replication_subscribe(struct recovery_state *tx_r, int fd, struct xrow_header *packet)
 {
-	Relay relay(fd, packet->sync);
+	Relay relay(tx_r, fd, packet->sync);
 
 	struct tt_uuid uu = uuid_nil, server_uuid = uuid_nil;
 
@@ -260,4 +264,6 @@ relay_send_row(struct recovery_state *r, void *param,
 	 * it here.
 	 */
 	vclock_follow(&r->vclock, packet->server_id, packet->lsn);
+
+	relay->last_row_time = ev_now(loop());
 }
