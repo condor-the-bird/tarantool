@@ -89,20 +89,36 @@ int
 cfg_getarr_size(const char *name)
 {
 	cfg_get(name);
-	luaL_checktype(tarantool_L, -1, LUA_TTABLE);
-	int result = luaL_getn(tarantool_L, -1);
+	if (lua_istable(tarantool_L, -1)) {
+		int result = luaL_getn(tarantool_L, -1);
+		lua_pop(tarantool_L, 1);
+		return result;
+	} else if (lua_isnil(tarantool_L, -1)) {
+		lua_pop(tarantool_L, 1);
+		return 0;
+	}
+	/* handle scalars as an array with one element */
 	lua_pop(tarantool_L, 1);
-	return result;
+	return 1;
 }
 
 const char *
 cfg_getarr_elem(const char *name, int i)
 {
 	cfg_get(name);
-	luaL_checktype(tarantool_L, -1, LUA_TTABLE);
-	lua_rawgeti(tarantool_L, -1, i + 1);
-	const char *val = cfg_tostring(tarantool_L);
-	lua_pop(tarantool_L, 2);
-	return val;
+	if (lua_istable(tarantool_L, -1)) {
+		lua_rawgeti(tarantool_L, -1, i + 1);
+		const char *val = cfg_tostring(tarantool_L);
+		lua_pop(tarantool_L, 2);
+		return val;
+	} else if (i == 0 && !lua_isnil(tarantool_L, -1)) {
+		/* handle scalars as an array with one element */
+		const char *val = cfg_tostring(tarantool_L);
+		lua_pop(tarantool_L, 1);
+		return val;
+	}
+
+	lua_pop(tarantool_L, 1);
+	return NULL;
 }
 

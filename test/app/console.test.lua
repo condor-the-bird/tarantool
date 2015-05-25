@@ -8,7 +8,11 @@ local fiber = require('fiber')
 local ffi = require('ffi')
 
 -- Supress console log messages
-ffi.C.box_set_log_level(4)
+ffi.cdef[[
+void
+say_set_log_level(int new_level);
+]]
+ffi.C.say_set_log_level(4)
 
 local CONSOLE_SOCKET = '/tmp/tarantool-test-console.sock'
 local IPROTO_SOCKET = '/tmp/tarantool-test-iproto.sock'

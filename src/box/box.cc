@@ -112,6 +112,16 @@ box_check_uri(const char *source, const char *option_name)
 	}
 }
 
+static void
+box_check_replication_source(void)
+{
+	int arrn = cfg_getarr_size("replication_source");
+	for (int i = 0; i < arrn; i++) {
+		const char *source = cfg_getarr_elem("replication_source", i);
+		box_check_uri(source, "replication_source");
+	}
+}
+
 static enum wal_mode
 box_check_wal_mode(const char *mode_name)
 {
@@ -148,45 +158,40 @@ box_check_config()
 {
 	box_check_wal_mode(cfg_gets("wal_mode"));
 	box_check_uri(cfg_gets("listen"), "listen");
-	box_check_uri(cfg_gets("replication_source"), "replication_source");
+	box_check_replication_source();
 	box_check_readahead(cfg_geti("readahead"));
 	box_check_rows_per_wal(cfg_geti("rows_per_wal"));
 	box_check_wal_mode(cfg_gets("wal_mode"));
 }
 
 extern "C" void
-box_set_replication_source(const char *source)
+box_set_replication_source(void)
 {
-	box_check_uri(source, "replication_source");
-	bool old_is_replica = recovery->remote.reader;
-	bool new_is_replica = source != NULL;
+	struct recovery_state *r = recovery;
 
-	if (old_is_replica != new_is_replica ||
-	    (old_is_replica &&
-	     (strcmp(source, recovery->remote.source) != 0))) {
+	/*
+	 * Synchronize current state with box.cfg.replication_source value
+	 */
 
-		if (recovery->finalize) {
-			if (old_is_replica)
-				recovery_stop_remote(recovery);
-			recovery_set_remote(recovery, source);
-			if (recovery_has_remote(recovery))
-				recovery_follow_remote(recovery);
-		} else {
-			/*
-			 * Do nothing, we're in local hot
-			 * standby mode, the server
-			 * will automatically begin following
-			 * the remote when local hot standby
-			 * mode is finished, see
-			 * box_leave_local_hot_standby_mode()
-			 */
-		}
+	recovery_expire_remotes(r);
+
+	/* Start new connections. Block below can throw. */
+	int arrn = cfg_getarr_size("replication_source");
+	for (int i = 0; i < arrn; i++) {
+		const char *source = cfg_getarr_elem("replication_source", i);
+		if (source == NULL)
+			continue;
+		/* Can throw */
+		recovery_set_remote(r, source);
 	}
+
+	recovery_prune_remotes(r);
 }
 
 extern "C" void
-box_set_listen(const char *uri)
+box_set_listen(void)
 {
+	const char *uri = cfg_gets("listen");
 	box_check_uri(uri, "listen");
 	if (evio_service_is_active(&binary))
 		evio_service_stop(&binary);
@@ -196,8 +201,9 @@ box_set_listen(const char *uri)
 }
 
 extern "C" void
-box_set_wal_mode(const char *mode_name)
+box_set_wal_mode(void)
 {
+	const char *mode_name = cfg_gets("wal_mode");
 	enum wal_mode mode = box_check_wal_mode(mode_name);
 	if (mode != recovery->wal_mode &&
 	    (mode == WAL_FSYNC || recovery->wal_mode == WAL_FSYNC)) {
@@ -213,38 +219,39 @@ box_set_wal_mode(const char *mode_name)
 }
 
 extern "C" void
-box_set_log_level(int level)
+box_set_log_level(void)
 {
-	say_set_log_level(level);
+	say_set_log_level(cfg_geti("log_level"));
 }
 
 extern "C" void
-box_set_io_collect_interval(double interval)
+box_set_io_collect_interval(void)
 {
-	ev_set_io_collect_interval(loop(), interval);
+	ev_set_io_collect_interval(loop(), cfg_getd("io_collect_interval"));
 }
 
 extern "C" void
-box_set_snap_io_rate_limit(double limit)
+box_set_snap_io_rate_limit(void)
 {
-	recovery_update_io_rate_limit(recovery, limit);
+	recovery_update_io_rate_limit(recovery, cfg_getd("snap_io_rate_limit"));
 }
 
 extern "C" void
-box_set_too_long_threshold(double threshold)
+box_set_too_long_threshold(void)
 {
-	too_long_threshold = threshold;
+	too_long_threshold = cfg_getd("too_long_threshold");
 }
 
 extern "C" void
-box_set_readahead(int readahead)
+box_set_readahead(void)
 {
+	int readahead = cfg_geti("readahead");
 	box_check_readahead(readahead);
 	iobuf_set_readahead(readahead);
 }
 
 extern "C" void
-box_set_panic_on_wal_error(int /* yesno */)
+box_set_panic_on_wal_error(void)
 {
 	recovery_setup_panic(recovery,
 			     cfg_geti("panic_on_snap_error"),
@@ -441,18 +448,18 @@ box_init(void)
 	recovery = recovery_new(cfg_gets("snap_dir"),
 				cfg_gets("wal_dir"),
 				recover_row, NULL);
-	recovery_set_remote(recovery,
-			    cfg_gets("replication_source"));
 	recovery_setup_panic(recovery,
 			     cfg_geti("panic_on_snap_error"),
 			     cfg_geti("panic_on_wal_error"));
+
+	box_set_replication_source();
 
 	if (recovery_has_data(recovery)) {
 		/* Tell Sophia engine LSN it must recover to. */
 		int64_t checkpoint_id =
 			recovery_last_checkpoint(recovery);
 		engine_recover_to_checkpoint(checkpoint_id);
-	} else if (recovery_has_remote(recovery)) {
+	} else if (cfg_getarr_size("replication_source") > 0) {
 		/* Initialize a new replica */
 		engine_begin_join();
 		replica_bootstrap(recovery);
@@ -474,7 +481,7 @@ box_init(void)
 	title("hot_standby", NULL);
 
 	iproto_init(&binary);
-	box_set_listen(cfg_gets("listen"));
+	box_set_listen();
 
 	int rows_per_wal = box_check_rows_per_wal(cfg_geti("rows_per_wal"));
 	enum wal_mode wal_mode = box_check_wal_mode(cfg_gets("wal_mode"));
@@ -484,8 +491,8 @@ box_init(void)
 
 	stat_cleanup(stat_base, IPROTO_TYPE_STAT_MAX);
 
-	if (recovery_has_remote(recovery))
-		recovery_follow_remote(recovery);
+	recovery_follow_remote(recovery);
+
 	/* Enter read-write mode. */
 	if (recovery->server_id > 0)
 		box_set_ro(false);

@@ -107,14 +107,14 @@ box.cfg.panic_on_wal_error
 fiber = require('fiber')
 ---
 ...
-while box.info.replication.status ~= "stopped" do fiber.sleep(0.001) end
+while box.info.replication.source[box.cfg.replication_source].status ~= "stopped" do fiber.sleep(0.001) end
 ---
 ...
-box.info.replication.status
+box.info.replication.source[box.cfg.replication_source].status
 ---
 - stopped
 ...
-box.info.replication.message
+box.info.replication.source[box.cfg.replication_source].message
 ---
 - not all WALs have been successfully read
 ...

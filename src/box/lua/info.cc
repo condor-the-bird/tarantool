@@ -48,28 +48,43 @@ lbox_info_replication(struct lua_State *L)
 {
 	struct recovery_state *r = recovery;
 
-	lua_newtable(L);
+	lua_newtable(L); /* box.info.replication */
 
-	lua_pushstring(L, "status");
-	lua_pushstring(L, r->remote.status);
-	lua_settable(L, -3);
+	lua_newtable(L); /* box.info.replication.source */
 
-	if (r->remote.reader) {
-		lua_pushstring(L, "lag");
-		lua_pushnumber(L, r->remote.lag);
-		lua_settable(L, -3);
+	recovery_foreach_remote(r, remote) {
+		lua_newtable(L); /* box.info.replication.source[key] */
 
-		lua_pushstring(L, "idle");
-		lua_pushnumber(L, ev_now(loop()) - r->remote.last_row_time);
-		lua_settable(L, -3);
+		lua_pushstring(L, remote->source);
+		lua_setfield(L, -2, "source");
 
-		if (r->remote.reader->exception) {
-			lua_pushstring(L, "message");
-			lua_pushstring(L,
-				       r->remote.reader->exception->errmsg());
-			lua_settable(L, -3);
+		lua_pushstring(L, remote_status(remote));
+		lua_setfield(L, -2, "status");
+
+		if (remote->reader) {
+			lua_pushnumber(L, remote->reader->fid);
+			lua_setfield(L, -2, "fid");
+
+			lua_pushnumber(L, remote->lag);
+			lua_setfield(L, -2, "lag");
+
+			if (remote->last_row_time > 0) {
+				lua_pushnumber(L, ev_now(loop()) -
+					remote->last_row_time);
+				lua_setfield(L, -2, "idle");
+			}
+
+			if (remote->reader->exception) {
+				lua_pushstring(L, remote->reader->exception
+					->errmsg());
+				lua_setfield(L, -2, "message");
+			}
 		}
+
+		/* box.info.replication.source[key] */
+		lua_setfield(L, -2, remote->source);
 	}
+	lua_setfield(L, -2, "source");
 
 	return 1;
 }

@@ -29,22 +29,18 @@
  * SUCH DAMAGE.
  */
 #include <stdbool.h>
-#include <netinet/in.h>
-#include <sys/socket.h>
 
 #include "trivia/util.h"
-#include "third_party/tarantool_ev.h"
 #include "xlog.h"
 #include "vclock.h"
 #include "tt_uuid.h"
-#include "uri.h"
+#include "replica.h"
 
 #if defined(__cplusplus)
 extern "C" {
 #endif /* defined(__cplusplus) */
 
 struct fiber;
-struct tbuf;
 struct recovery_state;
 
 typedef void (apply_row_f)(struct recovery_state *, void *,
@@ -62,23 +58,6 @@ enum wal_mode { WAL_NONE = 0, WAL_WRITE, WAL_FSYNC, WAL_MODE_MAX };
 /** String constants for the supported modes. */
 extern const char *wal_mode_STRS[];
 
-enum { REMOTE_SOURCE_MAXLEN = 1024 }; /* enough to fit URI with passwords */
-
-/** State of a replication connection to the master */
-struct remote {
-	struct fiber *reader;
-	const char *status;
-	ev_tstamp lag, last_row_time;
-	bool warning_said;
-	char source[REMOTE_SOURCE_MAXLEN];
-	struct uri uri;
-	union {
-		struct sockaddr addr;
-		struct sockaddr_storage addrstorage;
-	};
-	socklen_t addr_len;
-};
-
 struct recovery_state {
 	struct vclock vclock;
 	/** The WAL we're currently reading/writing from/to. */
@@ -94,7 +73,7 @@ struct recovery_state {
 	 * locally or send to the replica.
 	 */
 	struct fiber *watcher;
-	struct remote remote;
+	remoteset_t remote;
 	/**
 	 * apply_row is a module callback invoked during initial
 	 * recovery and when reading rows from the master.

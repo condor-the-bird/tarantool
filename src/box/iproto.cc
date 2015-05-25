@@ -694,11 +694,15 @@ iproto_process(struct iproto_request *ireq)
 			/*
 			 * As soon as box_process_subscribe() returns the
 			 * lambda in the beginning of the block
-			 * will re-activate the watchers for us.
+			 * will re-activate the write watcher for us.
 			 */
 			ev_io_stop(con->loop, &con->input);
 			ev_io_stop(con->loop, &con->output);
+
 			box_process_join(con->input.fd, &ireq->header);
+
+			/* Re-activate read watcher */
+			ev_feed_event(con->loop, &con->input, EV_READ);
 			break;
 		case IPROTO_SUBSCRIBE:
 			ev_io_stop(con->loop, &con->input);
@@ -760,7 +764,7 @@ iproto_process_connect(struct iproto_request *request)
 	int fd = con->input.fd;
 	try {              /* connect. */
 		con->session = session_create(fd, con->cookie);
-		coio_write(&con->input, iproto_greeting(con->session->salt),
+		sio_writen(con->input.fd, iproto_greeting(con->session->salt),
 			   IPROTO_GREETING_SIZE);
 		if (! rlist_empty(&session_on_connect))
 			session_run_on_connect_triggers(con->session);

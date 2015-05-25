@@ -54,7 +54,6 @@ coio_init(struct ev_io *coio)
 	/* Prepare for ev events. */
 	coio->data = fiber();
 	ev_init(coio, (ev_io_cb) fiber_schedule_cb);
-	coio->fd = -1;
 }
 
 static inline bool

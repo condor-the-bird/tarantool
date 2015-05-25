@@ -189,7 +189,7 @@ recovery_new(const char *snap_dirname, const char *wal_dirname,
 	xdir_check(&r->wal_dir);
 
 	r->watcher = NULL;
-	recovery_init_remote(r);
+	remoteset_new(&r->remote);
 
 	guard.is_active = false;
 	return r;
@@ -242,6 +242,11 @@ recovery_delete(struct recovery_state *r)
 		 */
 		xlog_close(r->current_wal);
 	}
+
+#if 0 /* don't destroy remotes from sched */
+	recovery_expire_remotes(r);
+	recovery_prune_remotes(r);
+#endif
 	free(r);
 }
 
@@ -258,7 +263,6 @@ recovery_apply_row(struct recovery_state *r, struct xrow_header *row)
 {
 	/* Check lsn */
 	int64_t current_lsn = vclock_get(&r->vclock, row->server_id);
-	assert(current_lsn >= 0);
 	if (row->lsn > current_lsn)
 		r->apply_row(r, r->apply_row_param, row);
 }

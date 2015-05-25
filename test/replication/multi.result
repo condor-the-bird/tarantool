@@ -1,0 +1,160 @@
+fiber = require('fiber')
+---
+...
+box.schema.user.grant('guest', 'replication')
+---
+...
+box.schema.user.grant('guest', 'execute', 'universe')
+---
+...
+----------------------------------------------------------------------
+Bootstrap replicas
+----------------------------------------------------------------------
+done
+----------------------------------------------------------------------
+Make a full mesh
+----------------------------------------------------------------------
+server 1 connected
+server 1 connected
+server 1 connected
+box.info.vclock
+---
+- - 4
+  - 0
+  - 0
+...
+server 2 connected
+server 2 connected
+server 2 connected
+box.info.vclock
+---
+- - 4
+  - 0
+  - 0
+...
+server 3 connected
+server 3 connected
+server 3 connected
+box.info.vclock
+---
+- - 4
+  - 0
+  - 0
+...
+done
+----------------------------------------------------------------------
+Test inserts
+----------------------------------------------------------------------
+Create a test space
+_ = box.schema.space.create('test')
+---
+...
+_ = box.space.test:create_index('primary')
+---
+...
+server 1 is ok
+server 2 is ok
+server 3 is ok
+
+Insert records
+inserted 60 records
+
+Synchronize
+server 3 done
+server 3 done
+server 3 done
+done
+
+Check data
+server 1 is ok
+server 2 is ok
+server 3 is ok
+Done
+
+----------------------------------------------------------------------
+Test "connect" and "disconnecting" states
+----------------------------------------------------------------------
+box.cfg { replication_source = '0' }
+---
+...
+server_uri, rinfo = next(box.info.replication.source)
+---
+...
+rinfo.status == 'connect' or rinfo.status == 'disconnected'
+---
+- true
+...
+box.cfg { replication_source = {} }
+---
+...
+fiber.info()[rinfo.fid] == nil
+---
+- true
+...
+box.cfg { replication_source = sources }
+---
+...
+----------------------------------------------------------------------
+Test "off" state
+----------------------------------------------------------------------
+kill reader fiber
+server_uri, info = next(box.info.replication.source); fiber.kill(info.fid)
+---
+...
+check that status changed to off
+box.info.replication.source[server_uri].status == 'off'
+---
+- true
+...
+re-configuration restartes reader
+box.cfg { replication_source = sources }
+---
+...
+wait to reconnect
+while box.info.replication.source[server_uri].status ~= 'follow' do fiber.sleep(0.01) end
+---
+...
+done
+----------------------------------------------------------------------
+Test "stopped" state
+----------------------------------------------------------------------
+Break up full mesh
+done
+
+box.info.replication.source
+---
+- []
+...
+Insert duplicate records
+box.space.test:insert{100500, 'bad record'}
+---
+- [100500, 'bad record']
+...
+box.space.test:insert{100500, 'bad record'}
+---
+- [100500, 'bad record']
+...
+done
+
+Restore full mesh
+done
+
+Wait for "stopped" state
+box.info.replication.source[server_uri].status
+---
+- stopped
+...
+box.info.replication.source[server_uri].message
+---
+- Duplicate key exists in unique index 'primary' in space 'test'
+...
+done
+
+
+----------------------------------------------------------------------
+Cleanup
+----------------------------------------------------------------------
+server 1 done
+server 2 done
+server 3 done
+
