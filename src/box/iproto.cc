@@ -96,6 +96,53 @@ struct iproto_request
 };
 STAILQ_HEAD(iproto_fifo, iproto_request);
 
+/** Context of a single client connection. */
+struct iproto_connection
+{
+	/**
+	 * Two rotating buffers for I/O. Input is always read into
+	 * iobuf[0]. As soon as iobuf[0] input buffer becomes full,
+	 * iobuf[0] is moved to iobuf[1], for flushing. As soon as
+	 * all output in iobuf[1].out is sent to the client, iobuf[1]
+	 * and iobuf[0] are moved around again.
+	 */
+	struct iobuf *iobuf[2];
+	/*
+	 * Copy of out buf for send data
+	 */
+	struct iovec iov[IOBUF_IOV_MAX];
+	/*
+	 * Size of readahead which is not parsed yet, i.e.
+	 * size of a piece of request which is not fully read.
+	 * Is always relative to iobuf[0]->in.end. In other words,
+	 * iobuf[0]->in.end - parse_size gives the start of the
+	 * unparsed request. A size rather than a pointer is used
+	 * to be safe in case in->buf is reallocated. Being
+	 * relative to in->end, rather than to in->pos is helpful to
+	 * make sure ibuf_reserve() or iobuf rotation don't make
+	 * the value meaningless.
+	 */
+	ssize_t parse_size;
+	/** Current write position in the output buffer */
+	struct obuf_svp write_pos;
+	/**
+	 * Function of the request processor to handle
+	 * a single request.
+	 */
+	struct ev_io input;
+	struct ev_io output;
+	/** Logical session. */
+	struct session *session;
+	uint64_t cookie;
+	ev_loop *loop;
+	/* Pre-allocated disconnect request. */
+	struct iproto_request *disconnect;
+	struct iproto_fifo txn_request_batch;
+	struct iproto_fifo iproto_request_batch;
+
+	uint8_t proxy_id;
+};
+
 static struct iproto_state_ {
 	struct cord cord;
 	pthread_cond_t cond;
@@ -207,37 +254,56 @@ iproto_proxy_read(struct ev_io *coio, struct iobuf *iobuf,
 	xrow_header_decode(row, (const char **) &in->pos, in->pos + len);
 }
 
-static void
-iproto_proxy_write(struct ev_io *coio, const struct xrow_header *row)
-{
-	struct iovec iov[XROW_IOVMAX];
-	int iovcnt = xrow_to_iovec(row, iov);
-	coio_writev(coio, iov, iovcnt, 0);
-}
+#define MAX_SEND_LENGTH 512
 
 static void
 iproto_proxy_worker(int id, struct ev_io *coio, struct iobuf *iobuf)
 {
 	struct proxy_destination *dest = &proxy_state.dest[id];
+	struct iovec iov[XROW_IOVMAX * MAX_SEND_LENGTH];
+	struct xrow_header row;
 	while (true) {
 		if (dest->queue_begin == dest->queue_end) {
 			dest->yield = true;
 			fiber_yield();
 			dest->yield = false;
 		}
-		struct xrow_header row;
-		while (dest->queue_begin != dest->queue_end) {
+		int maxreq = dest->queue_end - dest->queue_begin;
+		if (maxreq < 0)
+			maxreq += dest->queue_size;
+		if (maxreq >= MAX_SEND_LENGTH)
+			maxreq = MAX_SEND_LENGTH;
+		int iovcnt = 0;
+		for (int i = 0; i < maxreq; ++i) {
 			struct iproto_request *req =
-				dest->queue[dest->queue_begin++];
-			iproto_proxy_write(coio, &req->header);
-			iproto_proxy_read(coio, iobuf, &row);
+				dest->queue[dest->queue_begin];
+			dest->queue[dest->queue_begin++] = 0;
+			iovcnt += xrow_to_iovec(&req->header, &iov[iovcnt]);
+			struct iovec *outv = &iov[iovcnt - req->header.bodycnt];
+			for (int j = 0; j < req->header.bodycnt; ++j) {
+				outv->iov_base = region_alloc(&fiber()->gc,
+							      outv->iov_len);
+				memcpy(outv->iov_base,
+					req->header.body[j].iov_base,
+					outv->iov_len);
+				++outv;
+			}
 			req->iobuf->in.pos += req->total_len;
-			iobuf_reset(iobuf);
-			fiber_gc();
+			--req->iobuf->ref_count;
+			if (!req->iobuf->ref_count) {
+				if (! ev_is_active(&req->connection->input))
+					ev_feed_event(loop(), &req->connection->input, EV_READ);
+			}
+			mempool_free(&iproto_request_pool, req);
 			if (dest->queue_begin == dest->queue_size)
 				dest->queue_begin = 0;
-			mempool_free(&iproto_request_pool, req);
 		}
+		coio_writev(coio, iov, iovcnt, 0);
+		fiber_gc();
+		for (int i = 0; i < maxreq; ++i)
+			iproto_proxy_read(coio, iobuf, &row);
+		iobuf_reset(iobuf);
+		fiber_gc();
 	}
 }
 
@@ -273,7 +339,9 @@ iproto_proxy_connect(struct ev_io *coio, struct uri *uri, struct iobuf *iobuf)
 	xrow_encode_auth(&row, greeting, uri->login,
 			 uri->login_len, uri->password,
 			 uri->password_len);
-	iproto_proxy_write(coio, &row);
+	struct iovec iov[XROW_IOVMAX];
+	int iovcnt = xrow_to_iovec(&row, iov);
+	coio_writev(coio, iov, iovcnt, 0);
 	iproto_proxy_read(coio, iobuf, &row);
 	if (row.type != IPROTO_OK)
 		xrow_decode_error(&row); /* auth failed */
@@ -319,13 +387,17 @@ static void
 iproto_proxy_push(uint8_t id, struct iproto_request *req)
 {
 	struct proxy_destination *dest = &proxy_state.dest[id];
+	if (req->header.bodycnt)
+		assert(req->header.body[0].iov_len < 1024);
 	proxy_state.dest[id].queue[dest->queue_end++] = req;
 	if (dest->queue_end == dest->queue_size)
 		dest->queue_end = 0;
 	if (dest->queue_end != dest->queue_begin)
 		return;
-	if (dest->queue[dest->queue_begin])
+	if (dest->queue[dest->queue_begin]) {
 		mempool_free(&iproto_request_pool, dest->queue[dest->queue_begin]);
+		dest->queue[dest->queue_begin] = 0;
+	}
 	if (++dest->queue_begin == dest->queue_size)
 		dest->queue_begin = 0;
 }
@@ -333,53 +405,6 @@ iproto_proxy_push(uint8_t id, struct iproto_request *req)
 /* }}} */
 
 /* {{{ iproto_connection */
-
-/** Context of a single client connection. */
-struct iproto_connection
-{
-	/**
-	 * Two rotating buffers for I/O. Input is always read into
-	 * iobuf[0]. As soon as iobuf[0] input buffer becomes full,
-	 * iobuf[0] is moved to iobuf[1], for flushing. As soon as
-	 * all output in iobuf[1].out is sent to the client, iobuf[1]
-	 * and iobuf[0] are moved around again.
-	 */
-	struct iobuf *iobuf[2];
-	/*
-	 * Copy of out buf for send data
-	 */
-	struct iovec iov[IOBUF_IOV_MAX];
-	/*
-	 * Size of readahead which is not parsed yet, i.e.
-	 * size of a piece of request which is not fully read.
-	 * Is always relative to iobuf[0]->in.end. In other words,
-	 * iobuf[0]->in.end - parse_size gives the start of the
-	 * unparsed request. A size rather than a pointer is used
-	 * to be safe in case in->buf is reallocated. Being
-	 * relative to in->end, rather than to in->pos is helpful to
-	 * make sure ibuf_reserve() or iobuf rotation don't make
-	 * the value meaningless.
-	 */
-	ssize_t parse_size;
-	/** Current write position in the output buffer */
-	struct obuf_svp write_pos;
-	/**
-	 * Function of the request processor to handle
-	 * a single request.
-	 */
-	struct ev_io input;
-	struct ev_io output;
-	/** Logical session. */
-	struct session *session;
-	uint64_t cookie;
-	ev_loop *loop;
-	/* Pre-allocated disconnect request. */
-	struct iproto_request *disconnect;
-	struct iproto_fifo txn_request_batch;
-	struct iproto_fifo iproto_request_batch;
-
-	uint8_t proxy_id;
-};
 
 static struct mempool iproto_connection_pool;
 
@@ -629,6 +654,7 @@ iproto_connection_input_iobuf(struct iproto_connection *con)
 static inline void
 iproto_enqueue_batch(struct iproto_connection *con, struct ibuf *in)
 {
+	bool call_proxy = false;
 	while (true) {
 		const char *reqstart = in->end - con->parse_size;
 		const char *pos = reqstart;
@@ -681,8 +707,7 @@ iproto_enqueue_batch(struct iproto_connection *con, struct ibuf *in)
 		ireq = guard.release();
 		if (proxy_state.dest_size) {
 			iproto_proxy_push(con->proxy_id, ireq);
-			if (proxy_state.dest[con->proxy_id].yield)
-				fiber_call(proxy_state.dest[con->proxy_id].worker);
+			call_proxy = true;
 		} else {
 			STAILQ_INSERT_TAIL(&con->iproto_request_batch, ireq, fifo);
 		}
@@ -692,6 +717,8 @@ iproto_enqueue_batch(struct iproto_connection *con, struct ibuf *in)
 		if (con->parse_size == 0)
 			break;
 	}
+	if (call_proxy && proxy_state.dest[con->proxy_id].yield)
+		fiber_call(proxy_state.dest[con->proxy_id].worker);
 }
 
 static void
@@ -1093,6 +1120,7 @@ iproto_on_accept(struct evio_service * /* service */, int fd,
 	struct iproto_request *ireq =
 		iproto_request_new(con, iproto_process_connect,
 				   iproto_request_connect);
+	ireq->header.type = IPROTO_TYPE_ADMIN_MAX;
 	ireq->total_len = 0;
 	SWITCH_TO_TXN
 }
