@@ -383,6 +383,31 @@ iproto_proxy_fiber(va_list ap)
 	}
 }
 
+static uint64_t iproto_proxy_drops[IPROTO_TYPE_ADMIN_MAX];
+
+static void
+iproto_proxy_report(va_list)
+{
+	while (true) {
+		fiber_yield_timeout(1.0);
+		uint64_t all_drop = 0;
+		for (uint64_t i = 0; i < IPROTO_TYPE_ADMIN_MAX; ++i)
+			all_drop += iproto_proxy_drops[i];
+		say_info("DROP_STAT: SELECT=%ld, INSERT=%ld, REPLACE=%ld,"
+			"UPDATE=%ld, DELETE=%ld, CALL=%ld, EVAL=%ld, ALL=%ld",
+			iproto_proxy_drops[IPROTO_SELECT],
+			iproto_proxy_drops[IPROTO_INSERT],
+			iproto_proxy_drops[IPROTO_REPLACE],
+			iproto_proxy_drops[IPROTO_UPDATE],
+			iproto_proxy_drops[IPROTO_DELETE],
+			iproto_proxy_drops[IPROTO_CALL],
+			iproto_proxy_drops[IPROTO_EVAL],
+			all_drop);
+		for (uint64_t i = 0; i < IPROTO_TYPE_ADMIN_MAX; ++i)
+			iproto_proxy_drops[i] = 0;
+	}
+}
+
 static void
 iproto_proxy_push(uint8_t id, struct iproto_request *req)
 {
@@ -395,8 +420,11 @@ iproto_proxy_push(uint8_t id, struct iproto_request *req)
 	if (dest->queue_end != dest->queue_begin)
 		return;
 	if (dest->queue[dest->queue_begin]) {
-		mempool_free(&iproto_request_pool, dest->queue[dest->queue_begin]);
+		struct iproto_request *req = dest->queue[dest->queue_begin];
 		dest->queue[dest->queue_begin] = 0;
+		if (req->request.type < IPROTO_TYPE_ADMIN_MAX)
+			++iproto_proxy_drops[req->request.type];
+		mempool_free(&iproto_request_pool, req);
 	}
 	if (++dest->queue_begin == dest->queue_size)
 		dest->queue_begin = 0;
@@ -1252,6 +1280,7 @@ iproto_thread(void * /* worker_args */)
 	for (int i = 0; i < proxy_state.dest_size; ++i) {
 		fiber_start(fiber_new("proxy", iproto_proxy_fiber), i);
 	}
+	fiber_start(fiber_new("proxy_stat", iproto_proxy_report));
 	tt_pthread_cond_signal(&iproto_state.cond);
 	tt_pthread_mutex_unlock(&iproto_state.mutex);
 	try {
