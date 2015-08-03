@@ -71,3 +71,7 @@ doc/sphinx/_build/*
 !doc/sphinx/_build/.gitignore
 doc/www/content/doc
 extra/dist/default/tarantool
+
+000000000*
+.*.swp
+*.pyc

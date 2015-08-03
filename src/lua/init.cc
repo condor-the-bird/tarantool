@@ -97,7 +97,8 @@ extern char strict_lua[],
 	dis_x64_lua[],
 	dump_lua[],
 	csv_lua[],
-	v_lua[];
+	v_lua[],
+	memcached_lua[];
 
 #if LUAJIT_VERSION_NUM >= 20100 /* LuaJIT 2.1+ */
 extern char p_lua[], zone_lua[];
@@ -135,6 +136,7 @@ static const char *lua_modules[] = {
 	"jit.p", p_lua,
 	"jit.zone", zone_lua,
 #endif /* LuaJIT 2.1+ */
+	"memcached", memcached_lua,
 	NULL
 };
 
