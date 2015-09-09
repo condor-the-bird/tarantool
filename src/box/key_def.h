@@ -39,6 +39,7 @@
 #include <limits.h>
 #include <wchar.h>
 #include <wctype.h>
+#include "tuple_gen.h"
 
 enum {
 	BOX_ENGINE_MAX = 3, /* + 1 to the actual number of engines */
@@ -148,6 +149,9 @@ struct key_def {
 	/** Index type. */
 	enum index_type type;
 	struct key_opts opts;
+	/** comparators */
+	void* tuple_compare;
+	void* tuple_compare_with_key;
 	/** The size of the 'parts' array. */
 	uint32_t part_count;
 	/** Description of parts of a multipart index. */
@@ -169,6 +173,9 @@ key_def_dup(struct key_def *def)
 	if (dup) {
 		memcpy(dup->parts, def->parts,
 		       def->part_count * sizeof(*def->parts));
+
+		dup->tuple_compare = def->tuple_compare;
+		dup->tuple_compare_with_key = def->tuple_compare_with_key;
 	}
 	return dup;
 }
@@ -201,6 +208,16 @@ key_def_set_part(struct key_def *def, uint32_t part_no,
 	assert(part_no < def->part_count);
 	def->parts[part_no].fieldno = fieldno;
 	def->parts[part_no].type = type;
+	uint32_t i;
+	for (i = 0; i < def->part_count &&
+	     def->parts[i].type != UNKNOWN; i++) {
+		/* All types known */
+	}
+	if (i == def->part_count) {
+		def->tuple_compare = (void *)tuple_gen_compare(def);
+		def->tuple_compare_with_key =
+				(void *)tuple_gen_compare_with_key(def);
+	}
 }
 
 /** Compare two key part arrays.

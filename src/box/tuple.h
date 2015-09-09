@@ -50,6 +50,16 @@ extern struct small_alloc memtx_alloc;
 /** Tuple slab arena */
 extern struct slab_arena memtx_arena;
 
+extern "C" {
+typedef int (*tuple_cmp_wk_t)(const struct tuple *tuple_a,
+			      const char *key,
+			      uint32_t part_count,
+			      const struct key_def *key_def);
+typedef int (*tuple_cmp_t)(const struct tuple *tuple_a,
+			   const struct tuple *tuple_b,
+			   const struct key_def *key_def);
+}
+
 /**
  * @brief In-memory tuple format
  */

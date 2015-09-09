@@ -93,6 +93,9 @@ key_def_new(uint32_t space_id, uint32_t iid, const char *name,
 	def->part_count = part_count;
 
 	memset(def->parts, 0, parts_size);
+
+	def->tuple_compare = (void *)tuple_gen_compare(def);
+	def->tuple_compare_with_key = (void *)tuple_gen_compare_with_key(def);
 	return def;
 }
 

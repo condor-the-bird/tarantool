@@ -121,7 +121,7 @@ set_source_files_compile_flags(${server_sources})
 add_library(server STATIC ${server_sources})
 target_link_libraries(server core)
 
-set (common_libraries server core misc bitset msgpuck)
+set (common_libraries server core misc bitset msgpuck dynasm)
 
 list(APPEND common_libraries
     ${LIBEIO_LIBRARIES}
