@@ -61,14 +61,15 @@ tuple_compare_with_key_ns(const struct tuple *tuple, const char *key,
 		       uint32_t part_count, const struct key_def *key_def)
 {
 	(void)part_count;
-	assert(key != NULL || part_count == 0);
+	assert(key != NULL);
 	assert(part_count <= key_def->part_count);
 	struct tuple_format *format = tuple_format(tuple);
 
 	int r = 0; /* Part count can be 0 in wildcard searches. */
-
+	if (part_count == 0)
+		return 0;
 	const char *field = tuple_field_old(format, tuple, key_def->parts[0].fieldno);
-	if ((r = mp_compare_uint(field, key)))
+	if ((r = mp_compare_uint(field, key)) != 0 || part_count == 1)
 		return r;
 	mp_next(&key);
 
@@ -80,8 +81,6 @@ tuple_compare_with_key_ns(const struct tuple *tuple, const char *key,
 	r = memcmp(a, b, MIN(size_a, size_b));
 	if (r == 0)
 		r = size_a < size_b ? -1 : size_a > size_b;
-
-	mp_next(&key);
 
 	return r;
 }
@@ -100,7 +99,7 @@ void *tuple_gen_compare_with_key(const struct key_def *def) {
 	//|  mov eax, num
 	//|  ret
 	dasm_put(Dst, 0, num);
-#line 85 "src/box/tuple_gen_asm.cc"
+#line 84 "src/box/tuple_gen_asm.cc"
 
 	int (*f)() = (int (*)())dynasm_assemble(Dst);
 	int res = f();
