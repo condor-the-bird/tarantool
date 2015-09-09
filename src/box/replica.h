@@ -64,6 +64,7 @@ struct replica {
 	enum replica_state state;
 	ev_tstamp lag, last_row_time;
 	bool warning_said;
+	uint32_t id;
 	char source[REPLICA_SOURCE_MAXLEN];
 	struct uri uri;
 	union {

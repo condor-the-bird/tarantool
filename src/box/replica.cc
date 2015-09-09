@@ -200,21 +200,44 @@ replica_subscribe(struct replica *replica, struct recovery_state *r)
 	struct ev_io *coio = &replica->io;
 	struct iobuf *iobuf = replica->iobuf;
 	struct xrow_header row;
+	struct vclock vclock;
+	vclock_create(&vclock);
+	char *vclock_str;
+
 	xrow_encode_subscribe(&row, &cluster_id, &r->server_uuid, &r->vclock);
 	replica_write_row(coio, &row);
 	replica_set_state(replica, REPLICA_FOLLOW);
 	/* Re-enable warnings after successful execution of SUBSCRIBE */
 	replica->warning_said = false;
 
-	/**
-	 * If there is an error in subscribe, it's
-	 * sent directly in response to subscribe.
-	 * If subscribe is successful, there is no
-	 * "OK" response, but a stream of rows.
-	 * from the binary log.
+	/*
+	 * Read SUBSCRIBE response
+	 */
+	replica_read_row(coio, iobuf, &row);
+	if (iproto_type_is_error(row.type))
+		return xrow_decode_error(&row);  /* error */
+	if (row.type != IPROTO_OK) {
+		/*
+		 * In case of Tarantool < 1.6.5 if subscribe is successful,
+		 * there is no "OK" response, but a stream of rows.
+		 * from the binary log.
+		 */
+		say_info("subscribed to master (Tarantool <= 1.6.5)");
+		goto process_row;
+	}
+	xrow_decode_vclock(&row, &vclock);
+	vclock_str = vclock_to_string(&vclock);
+	say_info("subscribed to master, id = %u, vclock = %s",
+		 row.server_id, vclock_str);
+	free(vclock_str);
+	replica->id = row.server_id;
+
+	/*
+	 * Process a stream of rows from the binary log.
 	 */
 	while (true) {
 		replica_read_row(coio, iobuf, &row);
+process_row:
 		replica->lag = ev_now(loop()) - row.tm;
 		replica->last_row_time = ev_now(loop());
 
@@ -269,6 +292,7 @@ replica_disconnect(struct replica *replica, Exception *e,
 	coio_close(loop(), &replica->io);
 	iobuf_reset(replica->iobuf);
 	replica_set_state(replica, state);
+	replica->id = 0;
 	fiber_gc();
 }
 
