@@ -157,6 +157,9 @@ struct errcode_record {
 	/*101 */_(ER_RTREE_RECT,		2, "RTree: %s must be an array with %u (point) or %u (rectangle/box) numeric coordinates") \
 	/*102 */_(ER_PROC_C,			2, "%s") \
 	/*103 */_(ER_UNKNOWN_RTREE_INDEX_DISTANCE_TYPE,	2, "Unknown RTREE index distance type %s") \
+	/*104 */_(ER_WRONG_INDEX_SPACE_RECORD,  2, "Wrong record in _index space: got [%s], expected [%s]") \
+	/*105 */_(ER_WRONG_INDEX_PARTS_DEFINITION, 2, "Wrong index parts (field %u) definition: %s; expected [[field0_no(NUM), field0_type(STR), ..][field1_no (NUM), field1_type(STR), ..]..]") \
+	/*106 */_(ER_WRONG_INDEX_OPTS_DEFINITION, 2, "Wrong index options (field %u) definition: %s") \
 
 /*
  * !IMPORTANT! Please follow instructions at start of the file
