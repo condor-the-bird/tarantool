@@ -13,10 +13,10 @@ box.schema.func.create('tuple_bench', {language = "C"})
 box.schema.user.grant('guest', 'execute', 'function', 'tuple_bench')
 ---
 ...
-_ = box.schema.space.create('tester')
+space = box.schema.space.create('tester')
 ---
 ...
-_ = box.space.tester:create_index('primary', {type = 'TREE', parts =  {1, 'NUM', 2, 'STR'}})
+_ = space:create_index('primary', {type = 'TREE', parts =  {1, 'NUM'}})
 ---
 ...
 box.schema.user.grant('guest', 'read,write', 'space', 'tester')
@@ -30,9 +30,9 @@ box.space.tester:insert({2, "bcd", 200})
 ---
 - [2, 'bcd', 200]
 ...
-box.space.tester:insert({2, "ccd", 200})
+box.space.tester:insert({3, "ccd", 200})
 ---
-- [2, 'ccd', 200]
+- [3, 'ccd', 200]
 ...
 prof = require('gperftools.cpu')
 ---

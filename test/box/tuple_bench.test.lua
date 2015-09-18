@@ -6,13 +6,13 @@ c = net:new(os.getenv("LISTEN"))
 
 box.schema.func.create('tuple_bench', {language = "C"})
 box.schema.user.grant('guest', 'execute', 'function', 'tuple_bench')
-_ = box.schema.space.create('tester')
-_ = box.space.tester:create_index('primary', {type = 'TREE', parts =  {1, 'NUM', 2, 'STR'}})
+space = box.schema.space.create('tester')
+_ = space:create_index('primary', {type = 'TREE', parts =  {1, 'NUM'}})
 box.schema.user.grant('guest', 'read,write', 'space', 'tester')
 
 box.space.tester:insert({1, "abc", 100})
 box.space.tester:insert({2, "bcd", 200})
-box.space.tester:insert({2, "ccd", 200})
+box.space.tester:insert({3, "ccd", 200})
 
 prof = require('gperftools.cpu')
 prof.start('tuple.prof')
